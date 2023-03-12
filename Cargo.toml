@@ -1,0 +1,20 @@
+[package]
+name = "minimal-eventstore"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "eventstore"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "1.0.147", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.28.0", features = ["bundled"] }
+uuid = { version = "1.2.2", features = ["v4", "fast-rng", "serde"] }
+r2d2_sqlite = "0.21.0"
+r2d2 = "0.8.10"
+tracing = "0.1.37"
+test-log = { version = "0.2.11", features = ["trace"] }
+env_logger = "0.10.0"
+tracing-subscriber = { version = "0.3.16", features = ["default", "env-filter"] }
