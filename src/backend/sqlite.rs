@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Statement};
+use rusqlite::{params, Statement, Transaction};
 use tracing::{debug, instrument, warn};
 use uuid::Uuid;
 
@@ -84,9 +84,8 @@ impl SqliteBackend {
     }
 
     #[instrument]
-    pub fn get_agg_max_version(&self, agg_id_str: &str) -> Result<u32, Error> {
-        let conn = self.pool.get().expect("failed to get connection");
-        let mut stmt = conn
+    pub fn get_agg_max_version(&self, tx: &Transaction, agg_id_str: &str) -> Result<u32, Error> {
+        let mut stmt = tx
             .prepare("SELECT COALESCE(MAX(version), 0) as max_version FROM eventstore WHERE aggregate_id = ?")
             .unwrap();
         let version = match stmt.query_row(params![agg_id_str], |row| match row.get::<_, u32>(0) {
@@ -107,7 +106,15 @@ impl SqliteBackend {
 
     #[instrument]
     pub fn append_event(&self, event: &Event) -> Result<(), Error> {
-        let version = match self.get_agg_max_version(&event.id.to_string()) {
+        let mut conn = self.pool.get().expect("failed to get connection");
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(err) => {
+                warn!(sqlite_error = err.to_string());
+                return Err(Error);
+            }
+        };
+        let version = match self.get_agg_max_version(&tx, &event.id.to_string()) {
             Ok(version) => version,
             Err(err) => {
                 return Err(err);
@@ -118,13 +125,18 @@ impl SqliteBackend {
             warn!("version mismtach {} != {}", event.version, expected_version);
             return Err(Error);
         }
-        let conn = self.pool.get().expect("failed to get connection");
-        let res = conn.execute(
+        let res = tx.execute(
             "INSERT INTO eventstore(aggregate_id, version, data) VALUES(?,?,?)",
             params![&event.id.to_string(), event.version, event.data],
         );
         match res {
-            Ok(_) => Ok(()),
+            Ok(_) => match tx.commit() {
+                Ok(_) => Ok(()),
+                Err(err) => {
+                    warn!(sqlite_error = err.to_string());
+                    Err(Error)
+                }
+            },
             Err(err) => {
                 warn!(sqlite_error = err.to_string());
                 Err(Error)
