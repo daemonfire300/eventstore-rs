@@ -6,7 +6,6 @@ pub fn add(left: usize, right: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    pub mod integration_test;
 
     use super::*;
 
