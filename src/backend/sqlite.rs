@@ -20,7 +20,13 @@ impl Debug for Error {
     }
 }
 
-static CREATE_TABLE_STMT: &'static str = "CREATE TABLE eventstore(
+static CREATE_AGGREGATE_OVERVIEW_TABLE_STMT: &'static str = "CREATE TABLE aggregate_index(
+                aggregate_id INTEGER,
+                type_name TEXT,
+                version INTEGER
+            )";
+
+static CREATE_AGGREGATE_TABLE_STMT: &'static str = "CREATE TABLE eventstore(
                 aggregate_id INTEGER,
                 data BLOB,
                 version INTEGER
@@ -47,16 +53,22 @@ impl SqliteBackend {
     #[instrument]
     fn init_tables(&self) -> Result<(), Error> {
         let _span = tracing::debug_span!("creating tables").entered();
-        let res = self
-            .pool
-            .get()
-            .expect("failed to get connection")
-            .execute(CREATE_TABLE_STMT, params![]);
-        debug!(executed_query = CREATE_TABLE_STMT, "executed query");
-        match res {
-            Ok(_) => Ok(()),
-            Err(_) => Err(Error),
+        for qry in vec![
+            CREATE_AGGREGATE_TABLE_STMT,
+            CREATE_AGGREGATE_OVERVIEW_TABLE_STMT,
+        ] {
+            let res = self
+                .pool
+                .get()
+                .expect("failed to get connection")
+                .execute(qry, params![]);
+            debug!(executed_query = qry, "executed query");
+            match res {
+                Ok(_) => continue,
+                Err(_) => return Err(Error),
+            };
         }
+        return Ok(());
     }
 
     #[instrument]
