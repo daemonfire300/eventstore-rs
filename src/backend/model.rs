@@ -1,6 +1,3 @@
-use rusqlite::types::FromSql;
-use uuid::Uuid;
-
 #[derive(Debug)]
 pub struct Event {
     pub id: uuid::Uuid,
