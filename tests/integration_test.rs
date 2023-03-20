@@ -13,16 +13,36 @@ fn assert_get_aggreate_of_len(
 ) {
     let res = backend.get_aggretate(aggregate_id);
     match res {
-        Ok(expr) => {
+        Ok(events) => {
             assert!(
-                expr.len() == expected_len,
+                events.len() == expected_len,
                 "result len should be {}, but is {}",
                 expected_len,
-                expr.len()
+                events.len()
             );
+            assert_gap_less_version(&events);
         }
         Err(_err) => panic!("something went wrong"),
     };
+}
+
+fn assert_gap_less_version(events: &Vec<Event>) {
+    let mut last_version = 0;
+    for (idx, ev) in events.iter().enumerate() {
+        if last_version == 0 {
+            last_version = ev.version;
+        } else {
+            assert!(
+                ev.version == last_version + 1,
+                "expected version to be gapless, previous version {}, next version {}, expected: {}, at index: {}",
+                last_version,
+                ev.version,
+                last_version + 1,
+                idx
+            );
+            last_version = ev.version;
+        }
+    }
 }
 
 #[test_log::test]
