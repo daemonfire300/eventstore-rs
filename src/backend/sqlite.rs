@@ -21,13 +21,13 @@ impl Debug for Error {
 }
 
 static CREATE_AGGREGATE_OVERVIEW_TABLE_STMT: &'static str = "CREATE TABLE aggregate_index(
-                aggregate_id INTEGER,
+                aggregate_id TEXT PRIMARY KEY,
                 type_name TEXT,
                 version INTEGER
             )";
 
 static CREATE_AGGREGATE_TABLE_STMT: &'static str = "CREATE TABLE eventstore(
-                aggregate_id INTEGER,
+                aggregate_id TEXT,
                 data BLOB,
                 version INTEGER
             )";
@@ -86,7 +86,7 @@ impl SqliteBackend {
     #[instrument]
     pub fn get_agg_max_version(&self, tx: &Transaction, agg_id_str: &str) -> Result<u32, Error> {
         let mut stmt = tx
-            .prepare("SELECT COALESCE(MAX(version), 0) as max_version FROM eventstore WHERE aggregate_id = ?")
+            .prepare("SELECT COALESCE(MAX(version), 0) as max_version FROM aggregate_index WHERE aggregate_id = ?")
             .unwrap();
         let version = match stmt.query_row(params![agg_id_str], |row| match row.get::<_, u32>(0) {
             Ok(val) => Ok(val),
@@ -128,6 +128,15 @@ impl SqliteBackend {
         let res = tx.execute(
             "INSERT INTO eventstore(aggregate_id, version, data) VALUES(?,?,?)",
             params![&event.id.to_string(), event.version, event.data],
+        );
+        if let Err(err) = res {
+            warn!(sqlite_error = err.to_string());
+            return Err(Error);
+        }
+        let res = tx.execute(
+            "INSERT INTO aggregate_index(version, aggregate_id, type_name) VALUES(?,?, 'todo_implement_type_name')
+                ON CONFLICT(aggregate_id) DO UPDATE SET version = ?",
+            params![event.version, &event.id.to_string(), event.version],
         );
         match res {
             Ok(_) => match tx.commit() {
