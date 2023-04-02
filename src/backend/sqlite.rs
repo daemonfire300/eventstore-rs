@@ -69,9 +69,9 @@ impl Debug for SqliteBackend {
 }
 
 impl SqliteBackend {
-    pub fn new() -> Self {
-        let manager = r2d2_sqlite::SqliteConnectionManager::memory();
-        let pool = r2d2::Pool::new(manager).unwrap();
+    pub fn new(manager: r2d2_sqlite::SqliteConnectionManager) -> Self {
+        let pool = r2d2::Pool::new(manager).unwrap(); // TODO(juf): this should also be the
+                                                      // responsibility of the caller in the future to make this lib even thinner.
         let backend = Self { pool };
         backend.init_tables().unwrap();
         backend.init_indices().unwrap();

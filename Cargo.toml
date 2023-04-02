@@ -2,6 +2,12 @@
 name = "minimal-eventstore"
 version = "0.1.0"
 edition = "2021"
+description = "Hobby project SQLite backed event sourcing store"
+homepage = "https://github.com/daemonfire300/eventstore-rs"
+repository = "https://github.com/daemonfire300/eventstore-rs"
+license = "MIT"
+keywords = ["event-sourcing", "sqlite"]
+categories = ["database"]
 
 [lib]
 name = "eventstore"

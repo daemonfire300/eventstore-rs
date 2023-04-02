@@ -1,4 +1,5 @@
 use eventstore::backend::{model::Event, sqlite::SqliteBackend};
+use r2d2_sqlite::SqliteConnectionManager;
 use tracing::debug_span;
 
 /// Helper method
@@ -48,7 +49,8 @@ fn assert_gap_less_version(events: &Vec<Event>) {
 #[test_log::test]
 fn setup_sqlite_backend_and_fetch_empty() {
     let _span = debug_span!("test-main-span").entered();
-    let backend = eventstore::backend::sqlite::SqliteBackend::new();
+    let manager = SqliteConnectionManager::memory();
+    let backend = eventstore::backend::sqlite::SqliteBackend::new(manager);
     let aggregate_id = uuid::Uuid::parse_str("6018b301-a70f-4c00-a362-b2f35dfd611a").unwrap();
     assert_get_aggreate_of_len(aggregate_id, &backend, 0);
 }
@@ -56,7 +58,8 @@ fn setup_sqlite_backend_and_fetch_empty() {
 #[test_log::test]
 fn fetch_empty_then_insert_multiple_and_retrieve_list() {
     let _span = debug_span!("test-main-span").entered();
-    let backend = eventstore::backend::sqlite::SqliteBackend::new();
+    let manager = SqliteConnectionManager::memory();
+    let backend = eventstore::backend::sqlite::SqliteBackend::new(manager);
     let aggregate_id = uuid::Uuid::parse_str("d37aaaf7-45a7-4823-83f1-9aae13a6dfd1").unwrap();
     assert_get_aggreate_of_len(aggregate_id, &backend, 0);
     for i in 1..=10 {
@@ -73,7 +76,8 @@ fn fetch_empty_then_insert_multiple_and_retrieve_list() {
 #[test_log::test]
 fn fetch_empty_then_insert() {
     let _span = debug_span!("test-main-span").entered();
-    let backend = eventstore::backend::sqlite::SqliteBackend::new();
+    let manager = SqliteConnectionManager::memory();
+    let backend = eventstore::backend::sqlite::SqliteBackend::new(manager);
     let aggregate_id = uuid::Uuid::parse_str("6018b301-a70f-4c00-a362-b2f35dfd611a").unwrap();
     assert_get_aggreate_of_len(aggregate_id, &backend, 0);
     let event = Event {
@@ -88,7 +92,8 @@ fn fetch_empty_then_insert() {
 #[test_log::test]
 fn fetch_empty_then_insert_with_conflicting_version() {
     let _span = debug_span!("test-main-span").entered();
-    let backend = eventstore::backend::sqlite::SqliteBackend::new();
+    let manager = SqliteConnectionManager::memory();
+    let backend = eventstore::backend::sqlite::SqliteBackend::new(manager);
     let aggregate_id = uuid::Uuid::parse_str("ab27bed6-0e70-49f3-b15b-b211aa767242").unwrap();
     assert_get_aggreate_of_len(aggregate_id, &backend, 0);
     let event = Event {
