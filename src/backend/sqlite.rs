@@ -12,6 +12,11 @@ pub struct SqliteBackend {
     pool: Pool<SqliteConnectionManager>,
 }
 
+pub struct GetAggOpts {
+    pub agg_id: Uuid,
+    pub since_version: u32,
+}
+
 pub enum Error {
     WithMsg(String),
     InvalidUUID,
@@ -202,6 +207,15 @@ impl SqliteBackend {
 
     #[instrument]
     pub fn get_aggretate(&self, aggregate_id: Uuid) -> Result<Vec<Event>, Error> {
+        let agg_id_str: String = aggregate_id.to_string();
+        let conn = self.pool.get()?;
+        let mut stmt =
+            conn.prepare("SELECT * FROM eventstore WHERE aggregate_id = ? ORDER BY version ASC")?;
+        SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
+    }
+
+    #[instrument]
+    pub fn get_aggretate_with_opts(&self, aggregate_id: Uuid) -> Result<Vec<Event>, Error> {
         let agg_id_str: String = aggregate_id.to_string();
         let conn = self.pool.get()?;
         let mut stmt =
