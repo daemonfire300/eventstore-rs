@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Statement, Transaction};
+use rusqlite::{params, params_from_iter, Statement, Transaction};
 use tracing::{debug, instrument, warn};
 use uuid::Uuid;
 
@@ -12,6 +12,7 @@ pub struct SqliteBackend {
     pool: Pool<SqliteConnectionManager>,
 }
 
+#[derive(Debug)]
 pub struct GetAggOpts {
     pub agg_id: Uuid,
     pub since_version: u32,
@@ -170,8 +171,16 @@ impl SqliteBackend {
 
     #[instrument]
     fn result_from_stmt(stmt: &mut Statement, agg_id_str: &str) -> Result<Vec<Event>, Error> {
+        let params = vec![agg_id_str];
+        Self::result_from_stmt_with_params(stmt, &params)
+    }
+
+    fn result_from_stmt_with_params(
+        stmt: &mut Statement,
+        params: &Vec<&str>,
+    ) -> Result<Vec<Event>, Error> {
         let mut events: Vec<_> = Vec::new();
-        let query_res = stmt.query_and_then(params![agg_id_str], |r| {
+        let query_res = stmt.query_and_then(params_from_iter(params), |r| {
             let id = if let Ok(tmp) = r.get::<_, String>(0) {
                 match uuid::Uuid::parse_str(tmp.as_str()) {
                     Ok(id) => id,
@@ -215,11 +224,19 @@ impl SqliteBackend {
     }
 
     #[instrument]
-    pub fn get_aggretate_with_opts(&self, aggregate_id: Uuid) -> Result<Vec<Event>, Error> {
+    pub fn get_aggretate_with_opts(
+        &self,
+        aggregate_id: Uuid,
+        opts: &GetAggOpts,
+    ) -> Result<Vec<Event>, Error> {
         let agg_id_str: String = aggregate_id.to_string();
         let conn = self.pool.get()?;
-        let mut stmt =
-            conn.prepare("SELECT * FROM eventstore WHERE aggregate_id = ? ORDER BY version ASC")?;
-        SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
+        let mut stmt = conn.prepare(
+            "SELECT * FROM eventstore WHERE aggregate_id = ? AND version > ? ORDER BY version ASC",
+        )?;
+        SqliteBackend::result_from_stmt_with_params(
+            &mut stmt,
+            &vec![&agg_id_str, &opts.since_version.to_string()],
+        )
     }
 }
