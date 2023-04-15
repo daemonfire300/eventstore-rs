@@ -66,6 +66,18 @@ static CREATE_AGGREGATE_TABLE_STMT: &'static str = "CREATE TABLE eventstore(
                 version INTEGER
             )";
 
+static CREATE_SNAPSHOT_OVERVIEW_TABLE_STMT: &'static str = "CREATE TABLE snapshot_index(
+                aggregate_id TEXT PRIMARY KEY,
+                type_name TEXT,
+                version INTEGER
+            )";
+
+static CREATE_SNAPSHOT_TABLE_STMT: &'static str = "CREATE TABLE snapshot(
+                aggregate_id TEXT,
+                data BLOB,
+                version INTEGER
+            )";
+
 impl Debug for SqliteBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteBackend")
@@ -90,6 +102,8 @@ impl SqliteBackend {
         for qry in vec![
             CREATE_AGGREGATE_TABLE_STMT,
             CREATE_AGGREGATE_OVERVIEW_TABLE_STMT,
+            CREATE_SNAPSHOT_TABLE_STMT,
+            CREATE_SNAPSHOT_OVERVIEW_TABLE_STMT,
         ] {
             self.pool.get()?.execute(qry, params![])?;
         }
@@ -100,6 +114,10 @@ impl SqliteBackend {
     fn init_indices(&self) -> Result<(), Error> {
         self.pool.get()?.execute(
             "CREATE INDEX IF NOT EXISTS eventstore_agg_id_idx ON eventstore (aggregate_id)",
+            params![],
+        )?;
+        self.pool.get()?.execute(
+            "CREATE INDEX IF NOT EXISTS snapshot_agg_id_idx ON snapshot (aggregate_id)",
             params![],
         )?;
         return Ok(());
@@ -120,6 +138,40 @@ impl SqliteBackend {
         Ok(version)
     }
 
+    /// Save an snapshot to the eventstore.
+    /// Will overwrite existing snapshots.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    #[instrument]
+    pub fn save_snapshot(&self, event: &Event) -> Result<(), Error> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO snapshot(aggregate_id, version, data) VALUES(?,?,?)
+                ON CONFLICT(aggregate_id) DO UPDATE SET version = ?, data = ?",
+            params![&event.id.to_string(), event.version, event.data],
+        )?;
+        let res = tx.execute(
+            "INSERT INTO snapshot_index(version, aggregate_id, type_name) VALUES(?,?, 'todo_implement_type_name')
+                ON CONFLICT(aggregate_id) DO UPDATE SET version = ?",
+            params![event.version, &event.id.to_string(), event.version],
+        );
+        match res {
+            Ok(_) => match tx.commit() {
+                Ok(_) => Ok(()),
+                Err(err) => {
+                    warn!(sqlite_error = err.to_string());
+                    Err(Error::Sqlite(err))
+                }
+            },
+            Err(err) => {
+                warn!(sqlite_error = err.to_string());
+                Err(Error::Sqlite(err))
+            }
+        }
+    }
     #[instrument]
     pub fn append_event(&self, event: &Event) -> Result<(), Error> {
         let mut conn = self.pool.get()?;
@@ -220,6 +272,15 @@ impl SqliteBackend {
         let conn = self.pool.get()?;
         let mut stmt =
             conn.prepare("SELECT * FROM eventstore WHERE aggregate_id = ? ORDER BY version ASC")?;
+        SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
+    }
+
+    #[instrument]
+    pub fn get_snapshots(&self, aggregate_id: Uuid) -> Result<Vec<Event>, Error> {
+        let agg_id_str: String = aggregate_id.to_string();
+        let conn = self.pool.get()?;
+        let mut stmt =
+            conn.prepare("SELECT * FROM snapshot WHERE aggregate_id = ? ORDER BY version ASC")?;
         SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
     }
 
