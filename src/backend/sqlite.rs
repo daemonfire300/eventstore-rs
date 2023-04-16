@@ -29,16 +29,21 @@ impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidUUID => f.write_fmt(format_args!("could not parse uuid")),
-            Error::Sqlite(err) => f.write_fmt(format_args!("{}", err)),
-            Error::R2D2Sqlite(err) => f.write_fmt(format_args!("{}", err)),
-            Error::WithMsg(msg) => f.write_fmt(format_args!("{}", msg)),
+            Error::Sqlite(err) => f.write_fmt(format_args!("sqlite: {}", err)),
+            Error::R2D2Sqlite(err) => f.write_fmt(format_args!("r2d2_sqlite: {}", err)),
+            Error::WithMsg(msg) => f.write_fmt(format_args!("plain error: {}", msg)),
         }
     }
 }
 
 impl Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Error").finish()
+        match self {
+            Error::InvalidUUID => f.write_fmt(format_args!("could not parse uuid")),
+            Error::Sqlite(err) => f.write_fmt(format_args!("sqlite: {}", err)),
+            Error::R2D2Sqlite(err) => f.write_fmt(format_args!("r2d2_sqlite: {}", err)),
+            Error::WithMsg(msg) => f.write_fmt(format_args!("plain error: {}", msg)),
+        }
     }
 }
 
@@ -120,6 +125,10 @@ impl SqliteBackend {
             "CREATE INDEX IF NOT EXISTS snapshot_agg_id_idx ON snapshot (aggregate_id)",
             params![],
         )?;
+        self.pool.get()?.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS snapshot_unique_idx ON snapshot (aggregate_id, version)",
+            params![],
+        )?;
         return Ok(());
     }
 
@@ -150,7 +159,7 @@ impl SqliteBackend {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO snapshot(aggregate_id, version, data) VALUES(?,?,?)
-                ON CONFLICT(aggregate_id) DO UPDATE SET version = ?, data = ?",
+                ON CONFLICT(aggregate_id, version) DO UPDATE SET version = excluded.version, data = excluded.data",
             params![&event.id.to_string(), event.version, event.data],
         )?;
         let res = tx.execute(
@@ -172,6 +181,7 @@ impl SqliteBackend {
             }
         }
     }
+
     #[instrument]
     pub fn append_event(&self, event: &Event) -> Result<(), Error> {
         let mut conn = self.pool.get()?;
@@ -282,6 +292,23 @@ impl SqliteBackend {
         let mut stmt =
             conn.prepare("SELECT * FROM snapshot WHERE aggregate_id = ? ORDER BY version ASC")?;
         SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
+    }
+
+    #[instrument]
+    pub fn get_snapshot_by_version(
+        &self,
+        aggregate_id: Uuid,
+        version: u32,
+    ) -> Result<Vec<Event>, Error> {
+        let agg_id_str: String = aggregate_id.to_string();
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM snapshot WHERE aggregate_id = ? AND version = ? ORDER BY version ASC",
+        )?;
+        SqliteBackend::result_from_stmt_with_params(
+            &mut stmt,
+            &vec![&agg_id_str, &version.to_string()],
+        )
     }
 
     #[instrument]

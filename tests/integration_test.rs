@@ -186,3 +186,56 @@ fn fetch_empty_then_insert_with_conflicting_version() {
     let res = backend.append_event(&event);
     assert!(res.is_err(), "expected Err but got Ok");
 }
+
+#[test_log::test]
+fn snapshot_fetch_empty_then_insert_then_overwrite_snapshot() {
+    let _span = debug_span!("test-main-span").entered();
+    let manager = SqliteConnectionManager::memory();
+    let backend = eventstore::backend::sqlite::SqliteBackend::new(manager);
+    let aggregate_id = uuid::Uuid::parse_str("6018b301-a70f-4c00-a362-b2f35dfd611a").unwrap();
+    let snapshots = backend
+        .get_snapshots(aggregate_id)
+        .expect("failed to retrieve snapshots");
+    assert!(
+        snapshots.is_empty(),
+        "expected empty list but got {:?}",
+        snapshots
+    );
+    let event = Event {
+        id: aggregate_id,
+        version: 1,
+        data: vec![1, 2, 3, 4],
+    };
+    let _res = backend
+        .save_snapshot(&event)
+        .expect("failed to save snapshot");
+    let snapshots = backend
+        .get_snapshots(aggregate_id)
+        .expect("failed to retrieve snapshots");
+    assert!(
+        snapshots.len() == 1,
+        "expected 1 but got {}",
+        snapshots.len()
+    );
+    assert!(snapshots[0].data == vec![1, 2, 3, 4]);
+
+    let event = Event {
+        id: aggregate_id,
+        version: 1,
+        data: vec![7, 9, 6, 5],
+    };
+    let _res = backend
+        .save_snapshot(&event)
+        .expect("failed to save snapshot");
+    let snapshots = backend
+        .get_snapshots(aggregate_id)
+        .expect(format!("failed to retrieve snapshots, agg id = {}", aggregate_id).as_str());
+    assert!(
+        snapshots.len() == 1,
+        "expected 1 but got {}, agg id = {}",
+        snapshots.len(),
+        aggregate_id
+    );
+    assert!(snapshots[0].data == vec![7, 9, 6, 5]);
+    assert!(snapshots[0].version == 1);
+}
