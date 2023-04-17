@@ -21,6 +21,7 @@ pub struct GetAggOpts {
 pub enum Error {
     WithMsg(String),
     InvalidUUID,
+    NotFound,
     Sqlite(rusqlite::Error),
     R2D2Sqlite(r2d2::Error),
 }
@@ -32,6 +33,7 @@ impl Display for Error {
             Error::Sqlite(err) => f.write_fmt(format_args!("sqlite: {}", err)),
             Error::R2D2Sqlite(err) => f.write_fmt(format_args!("r2d2_sqlite: {}", err)),
             Error::WithMsg(msg) => f.write_fmt(format_args!("plain error: {}", msg)),
+            Error::NotFound => f.write_fmt(format_args!("not found")),
         }
     }
 }
@@ -43,6 +45,7 @@ impl Debug for Error {
             Error::Sqlite(err) => f.write_fmt(format_args!("sqlite: {}", err)),
             Error::R2D2Sqlite(err) => f.write_fmt(format_args!("r2d2_sqlite: {}", err)),
             Error::WithMsg(msg) => f.write_fmt(format_args!("plain error: {}", msg)),
+            Error::NotFound => f.write_fmt(format_args!("not found")),
         }
     }
 }
@@ -299,7 +302,7 @@ impl SqliteBackend {
         &self,
         aggregate_id: Uuid,
         version: u32,
-    ) -> Result<Vec<Event>, Error> {
+    ) -> Result<Event, Error> {
         let agg_id_str: String = aggregate_id.to_string();
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
@@ -308,7 +311,9 @@ impl SqliteBackend {
         SqliteBackend::result_from_stmt_with_params(
             &mut stmt,
             &vec![&agg_id_str, &version.to_string()],
-        )
+        )?
+        .pop()
+        .ok_or(Error::NotFound)
     }
 
     #[instrument]
