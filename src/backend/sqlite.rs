@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Statement, Transaction};
+use rusqlite::{params, params_from_iter, Statement, Transaction};
 use tracing::{debug, instrument, warn};
 use uuid::Uuid;
 
@@ -12,9 +12,16 @@ pub struct SqliteBackend {
     pool: Pool<SqliteConnectionManager>,
 }
 
+#[derive(Debug)]
+pub struct GetAggOpts {
+    pub agg_id: Uuid,
+    pub since_version: u32,
+}
+
 pub enum Error {
     WithMsg(String),
     InvalidUUID,
+    NotFound,
     Sqlite(rusqlite::Error),
     R2D2Sqlite(r2d2::Error),
 }
@@ -23,16 +30,23 @@ impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidUUID => f.write_fmt(format_args!("could not parse uuid")),
-            Error::Sqlite(err) => f.write_fmt(format_args!("{}", err)),
-            Error::R2D2Sqlite(err) => f.write_fmt(format_args!("{}", err)),
-            Error::WithMsg(msg) => f.write_fmt(format_args!("{}", msg)),
+            Error::Sqlite(err) => f.write_fmt(format_args!("sqlite: {}", err)),
+            Error::R2D2Sqlite(err) => f.write_fmt(format_args!("r2d2_sqlite: {}", err)),
+            Error::WithMsg(msg) => f.write_fmt(format_args!("plain error: {}", msg)),
+            Error::NotFound => f.write_fmt(format_args!("not found")),
         }
     }
 }
 
 impl Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Error").finish()
+        match self {
+            Error::InvalidUUID => f.write_fmt(format_args!("could not parse uuid")),
+            Error::Sqlite(err) => f.write_fmt(format_args!("sqlite: {}", err)),
+            Error::R2D2Sqlite(err) => f.write_fmt(format_args!("r2d2_sqlite: {}", err)),
+            Error::WithMsg(msg) => f.write_fmt(format_args!("plain error: {}", msg)),
+            Error::NotFound => f.write_fmt(format_args!("not found")),
+        }
     }
 }
 
@@ -55,6 +69,18 @@ static CREATE_AGGREGATE_OVERVIEW_TABLE_STMT: &'static str = "CREATE TABLE aggreg
             )";
 
 static CREATE_AGGREGATE_TABLE_STMT: &'static str = "CREATE TABLE eventstore(
+                aggregate_id TEXT,
+                data BLOB,
+                version INTEGER
+            )";
+
+static CREATE_SNAPSHOT_OVERVIEW_TABLE_STMT: &'static str = "CREATE TABLE snapshot_index(
+                aggregate_id TEXT PRIMARY KEY,
+                type_name TEXT,
+                version INTEGER
+            )";
+
+static CREATE_SNAPSHOT_TABLE_STMT: &'static str = "CREATE TABLE snapshot(
                 aggregate_id TEXT,
                 data BLOB,
                 version INTEGER
@@ -84,6 +110,8 @@ impl SqliteBackend {
         for qry in vec![
             CREATE_AGGREGATE_TABLE_STMT,
             CREATE_AGGREGATE_OVERVIEW_TABLE_STMT,
+            CREATE_SNAPSHOT_TABLE_STMT,
+            CREATE_SNAPSHOT_OVERVIEW_TABLE_STMT,
         ] {
             self.pool.get()?.execute(qry, params![])?;
         }
@@ -94,6 +122,14 @@ impl SqliteBackend {
     fn init_indices(&self) -> Result<(), Error> {
         self.pool.get()?.execute(
             "CREATE INDEX IF NOT EXISTS eventstore_agg_id_idx ON eventstore (aggregate_id)",
+            params![],
+        )?;
+        self.pool.get()?.execute(
+            "CREATE INDEX IF NOT EXISTS snapshot_agg_id_idx ON snapshot (aggregate_id)",
+            params![],
+        )?;
+        self.pool.get()?.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS snapshot_unique_idx ON snapshot (aggregate_id, version)",
             params![],
         )?;
         return Ok(());
@@ -112,6 +148,41 @@ impl SqliteBackend {
         })?;
         debug!(current_event_version = version);
         Ok(version)
+    }
+
+    /// Save an snapshot to the eventstore.
+    /// Will overwrite existing snapshots.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    #[instrument]
+    pub fn save_snapshot(&self, event: &Event) -> Result<(), Error> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO snapshot(aggregate_id, version, data) VALUES(?,?,?)
+                ON CONFLICT(aggregate_id, version) DO UPDATE SET version = excluded.version, data = excluded.data",
+            params![&event.id.to_string(), event.version, event.data],
+        )?;
+        let res = tx.execute(
+            "INSERT INTO snapshot_index(version, aggregate_id, type_name) VALUES(?,?, 'todo_implement_type_name')
+                ON CONFLICT(aggregate_id) DO UPDATE SET version = ?",
+            params![event.version, &event.id.to_string(), event.version],
+        );
+        match res {
+            Ok(_) => match tx.commit() {
+                Ok(_) => Ok(()),
+                Err(err) => {
+                    warn!(sqlite_error = err.to_string());
+                    Err(Error::Sqlite(err))
+                }
+            },
+            Err(err) => {
+                warn!(sqlite_error = err.to_string());
+                Err(Error::Sqlite(err))
+            }
+        }
     }
 
     #[instrument]
@@ -165,8 +236,16 @@ impl SqliteBackend {
 
     #[instrument]
     fn result_from_stmt(stmt: &mut Statement, agg_id_str: &str) -> Result<Vec<Event>, Error> {
+        let params = vec![agg_id_str];
+        Self::result_from_stmt_with_params(stmt, &params)
+    }
+
+    fn result_from_stmt_with_params(
+        stmt: &mut Statement,
+        params: &Vec<&str>,
+    ) -> Result<Vec<Event>, Error> {
         let mut events: Vec<_> = Vec::new();
-        let query_res = stmt.query_and_then(params![agg_id_str], |r| {
+        let query_res = stmt.query_and_then(params_from_iter(params), |r| {
             let id = if let Ok(tmp) = r.get::<_, String>(0) {
                 match uuid::Uuid::parse_str(tmp.as_str()) {
                     Ok(id) => id,
@@ -207,5 +286,50 @@ impl SqliteBackend {
         let mut stmt =
             conn.prepare("SELECT * FROM eventstore WHERE aggregate_id = ? ORDER BY version ASC")?;
         SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
+    }
+
+    #[instrument]
+    pub fn get_snapshots(&self, aggregate_id: Uuid) -> Result<Vec<Event>, Error> {
+        let agg_id_str: String = aggregate_id.to_string();
+        let conn = self.pool.get()?;
+        let mut stmt =
+            conn.prepare("SELECT * FROM snapshot WHERE aggregate_id = ? ORDER BY version ASC")?;
+        SqliteBackend::result_from_stmt(&mut stmt, &agg_id_str)
+    }
+
+    #[instrument]
+    pub fn get_snapshot_by_version(
+        &self,
+        aggregate_id: Uuid,
+        version: u32,
+    ) -> Result<Event, Error> {
+        let agg_id_str: String = aggregate_id.to_string();
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM snapshot WHERE aggregate_id = ? AND version = ? ORDER BY version ASC",
+        )?;
+        SqliteBackend::result_from_stmt_with_params(
+            &mut stmt,
+            &vec![&agg_id_str, &version.to_string()],
+        )?
+        .pop()
+        .ok_or(Error::NotFound)
+    }
+
+    #[instrument]
+    pub fn get_aggretate_with_opts(
+        &self,
+        aggregate_id: Uuid,
+        opts: &GetAggOpts,
+    ) -> Result<Vec<Event>, Error> {
+        let agg_id_str: String = aggregate_id.to_string();
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM eventstore WHERE aggregate_id = ? AND version > ? ORDER BY version ASC",
+        )?;
+        SqliteBackend::result_from_stmt_with_params(
+            &mut stmt,
+            &vec![&agg_id_str, &opts.since_version.to_string()],
+        )
     }
 }
