@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::backend::model::Event;
 
+#[derive(Clone)]
 pub struct SqliteBackend {
     pool: Pool<SqliteConnectionManager>,
 }
